@@ -1,6 +1,7 @@
 const OMDB_API_URL = "https://www.omdbapi.com/";
 const CACHE_PREFIX = "nfr_cache_";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const OMDB_KEY_STORAGE_KEY = "omdbKey";
 
 export interface CacheEntry {
   imdbRating: string | null;
@@ -164,4 +165,23 @@ export async function fetchOmdbRatings(
     writeCache(normalizedTitle, failureEntry);
     return failureEntry;
   }
+}
+
+export function getStoredOmdbKey(): Promise<string> {
+  return new Promise((resolve) => {
+    if (typeof chrome === "undefined" || !chrome.storage?.local) {
+      resolve("");
+      return;
+    }
+
+    chrome.storage.local.get(OMDB_KEY_STORAGE_KEY, (items: Record<string, unknown>) => {
+      const saved = items[OMDB_KEY_STORAGE_KEY];
+      resolve(typeof saved === "string" ? saved.trim() : "");
+    });
+  });
+}
+
+export async function fetchRatingsForTitle(title: string): Promise<CacheEntry> {
+  const apiKey = await getStoredOmdbKey();
+  return fetchOmdbRatings(title, apiKey);
 }
