@@ -12,11 +12,13 @@ const observedCards = new WeakSet<HTMLElement>();
 const inFlightRatings = new Map<string, ReturnType<typeof fetchRatingsForTitle>>();
 
 function debounce(callback: () => void, delayMs: number): () => void {
-  let timeoutId: number | undefined;
+  let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
 
   return () => {
-    window.clearTimeout(timeoutId);
-    timeoutId = window.setTimeout(callback, delayMs);
+    if (timeoutId !== undefined) {
+      globalThis.clearTimeout(timeoutId);
+    }
+    timeoutId = globalThis.setTimeout(callback, delayMs);
   };
 }
 

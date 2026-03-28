@@ -4,7 +4,7 @@
   "description": "Chrome extension scaffold for adding ratings overlays on Netflix cards.",
   "version": "0.1.0",
   "permissions": ["storage"],
-  "host_permissions": ["https://www.netflix.com/*", "https://api.omdbapi.com/*"],
+  "host_permissions": ["https://www.netflix.com/*", "https://www.omdbapi.com/*"],
   "action": {
     "default_title": "Netflix Ratings Overlay",
     "default_popup": "popup.html"

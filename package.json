@@ -7,11 +7,14 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "build:watch": "vite build --watch",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:integration": "vitest run test/integration --environment jsdom"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.4.0",
+    "jsdom": "^27.0.1",
     "typescript": "~5.9.3",
-    "vite": "^8.0.1"
+    "vite": "^8.0.1",
+    "vitest": "^3.2.4"
   }
 }
