@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Agent workspace artifacts
+.claude/
+.codex/
+.sprint-task-prompt.txt
