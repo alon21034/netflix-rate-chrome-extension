@@ -7,16 +7,43 @@ body {
 }
 
 .popup {
-  min-width: 260px;
+  min-width: 280px;
   padding: 12px;
+  display: grid;
+  gap: 8px;
 }
 
 h1 {
-  margin: 0 0 6px;
+  margin: 0;
   font-size: 14px;
 }
 
-p {
+.field {
+  font-size: 12px;
+}
+
+.input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.button {
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: #111827;
+  color: #ffffff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.status {
   margin: 0;
   color: #4b5563;
   font-size: 12px;
