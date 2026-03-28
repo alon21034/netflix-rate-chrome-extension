@@ -82,3 +82,7 @@ export function renderRatingsBadge(
   return host;
 }
 
+export function removeRatingsBadge(card: HTMLElement): void {
+  const host = card.querySelector<HTMLDivElement>(`:scope > div[${OVERLAY_HOST_ATTR}]`);
+  host?.remove();
+}
