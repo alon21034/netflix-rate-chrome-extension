@@ -1,39 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-interface MockOmdbPayload {
+interface MockBackendPayload {
   type: "movie" | "series";
   imdbRating: string;
   rtScore?: string;
 }
 
-function setMockChromeStorage(apiKey = "demo-key") {
-  const get = vi.fn((_keys: unknown, callback: (items: Record<string, unknown>) => void) => {
-    callback({ omdbKey: apiKey });
-  });
-  const set = vi.fn();
-
-  (globalThis as { chrome?: unknown }).chrome = {
-    storage: {
-      local: { get, set },
-    },
-  };
-
-  return { get, set };
-}
-
-function createMockFetch(payloadByTitle: Record<string, MockOmdbPayload>) {
+function createMockFetch(payloadByTitle: Record<string, MockBackendPayload>) {
   return vi.fn(async (input: RequestInfo | URL) => {
     const rawUrl =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const requestUrl = new URL(rawUrl);
-    const title = requestUrl.searchParams.get("t") ?? "";
-    const payload = payloadByTitle[title];
+    const title = requestUrl.searchParams.get("title") ?? "";
+    const payload = payloadByTitle[title.toLowerCase()];
 
     if (!payload) {
       return {
         ok: true,
         async json() {
-          return { Response: "False", Error: "Movie not found!" };
+          return { imdbRating: null, rtScore: null, type: null, imdbId: null, source: "not-found" };
         },
       } as Response;
     }
@@ -42,12 +27,11 @@ function createMockFetch(payloadByTitle: Record<string, MockOmdbPayload>) {
       ok: true,
       async json() {
         return {
-          Response: "True",
-          Type: payload.type,
           imdbRating: payload.imdbRating,
-          Ratings: payload.rtScore
-            ? [{ Source: "Rotten Tomatoes", Value: payload.rtScore }]
-            : [],
+          rtScore: payload.rtScore ?? null,
+          type: payload.type,
+          imdbId: "tt0000001",
+          source: "google+omdb",
         };
       },
     } as Response;
@@ -89,7 +73,6 @@ function getBadgeText(card: HTMLElement): string {
 
 describe("Content script integration", () => {
   const originalFetch = globalThis.fetch;
-  const originalChrome = (globalThis as { chrome?: unknown }).chrome;
 
   beforeEach(() => {
     document.body.innerHTML = "";
@@ -99,11 +82,9 @@ describe("Content script integration", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    (globalThis as { chrome?: unknown }).chrome = originalChrome;
   });
 
   it("renders correct badges for 5+ movies and 5+ TV shows", async () => {
-    setMockChromeStorage();
     const movieEntries = [
       ["Inception", { type: "movie", imdbRating: "8.8", rtScore: "87%" }],
       ["Interstellar", { type: "movie", imdbRating: "8.7", rtScore: "73%" }],
@@ -131,14 +112,14 @@ describe("Content script integration", () => {
 
     const moviesHtml = movieEntries
       .map(
-        ([title]) =>
-          `<div class="title-card" data-kind="movie" data-title="${title}"></div>`
+        ([title], index) =>
+          `<div class="title-card" data-kind="movie" data-title="${title}" data-id="8010017${index}"></div>`
       )
       .join("");
     const seriesHtml = seriesEntries
       .map(
-        ([title]) =>
-          `<div class="title-card" data-kind="series" data-title="${title}"></div>`
+        ([title], index) =>
+          `<div class="title-card" data-kind="series" data-title="${title}" data-id="8020017${index}"></div>`
       )
       .join("");
 
@@ -174,8 +155,6 @@ describe("Content script integration", () => {
   });
 
   it("reuses in-flight requests and cache for repeated titles", async () => {
-    setMockChromeStorage();
-
     let resolveFetch: (() => void) | null = null;
     const fetchMock = vi.fn(
       () =>
@@ -185,10 +164,11 @@ describe("Content script integration", () => {
               ok: true,
               async json() {
                 return {
-                  Response: "True",
-                  Type: "movie",
                   imdbRating: "8.1",
-                  Ratings: [{ Source: "Rotten Tomatoes", Value: "91%" }],
+                  rtScore: "91%",
+                  type: "movie",
+                  imdbId: "tt0816692",
+                  source: "google+omdb",
                 };
               },
             } as Response);
@@ -199,8 +179,8 @@ describe("Content script integration", () => {
 
     document.body.innerHTML = `
       <div class="lolomoRow">
-        <div class="title-card" data-title="Interstellar"></div>
-        <div class="title-card" data-title="Interstellar"></div>
+        <div class="title-card" data-title="Interstellar" data-id="80057281"></div>
+        <div class="title-card" data-title="Interstellar" data-id="80057281"></div>
       </div>
     `;
 
@@ -240,7 +220,6 @@ describe("Content script integration", () => {
   it("supports row-container selector and title extraction from heading tags", async () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    setMockChromeStorage();
     const fetchMock = createMockFetch({
       severance: { type: "series", imdbRating: "8.7" },
     });

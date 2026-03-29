@@ -1,7 +1,9 @@
-const OMDB_API_URL = "https://www.omdbapi.com/";
+const BACKEND_URL =
+  (typeof import.meta !== "undefined" && (import.meta as { env?: Record<string, string> }).env?.VITE_RATINGS_API_URL) ||
+  "https://YOUR_PROJECT.supabase.co/functions/v1/ratings";
+
 const CACHE_PREFIX = "nfr_cache_";
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const OMDB_KEY_STORAGE_KEY = "omdbKey";
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 export interface CacheEntry {
   imdbRating: string | null;
@@ -10,33 +12,26 @@ export interface CacheEntry {
   expiresAt: number;
 }
 
-interface OmdbRating {
-  Source?: string;
-  Value?: string;
+interface BackendResponse {
+  imdbRating: string | null;
+  rtScore: string | null;
+  type: string | null;
 }
 
-interface OmdbResponse {
-  Response?: string;
-  Error?: string;
-  Type?: string;
-  imdbRating?: string;
-  Ratings?: OmdbRating[];
-}
-
-function getCacheKey(normalizedTitle: string): string {
-  return `${CACHE_PREFIX}${normalizedTitle}`;
+function getCacheKey(id: string): string {
+  return `${CACHE_PREFIX}${id}`;
 }
 
 function hasLocalStorage(): boolean {
   return typeof globalThis !== "undefined" && typeof globalThis.localStorage !== "undefined";
 }
 
-function readCache(normalizedTitle: string): CacheEntry | null {
+function readCache(id: string): CacheEntry | null {
   if (!hasLocalStorage()) {
     return null;
   }
 
-  const key = getCacheKey(normalizedTitle);
+  const key = getCacheKey(id);
 
   try {
     const raw = globalThis.localStorage.getItem(key);
@@ -62,34 +57,16 @@ function readCache(normalizedTitle: string): CacheEntry | null {
   }
 }
 
-function writeCache(normalizedTitle: string, entry: CacheEntry): void {
+function writeCache(id: string, entry: CacheEntry): void {
   if (!hasLocalStorage()) {
     return;
   }
 
   try {
-    globalThis.localStorage.setItem(getCacheKey(normalizedTitle), JSON.stringify(entry));
+    globalThis.localStorage.setItem(getCacheKey(id), JSON.stringify(entry));
   } catch {
     // Best effort cache write only.
   }
-}
-
-function normalizeOmdbValue(value?: string): string | null {
-  if (!value || value === "N/A") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function extractRottenTomatoesScore(ratings?: OmdbRating[]): string | null {
-  if (!Array.isArray(ratings)) {
-    return null;
-  }
-
-  const rt = ratings.find((item) => item.Source === "Rotten Tomatoes");
-  return normalizeOmdbValue(rt?.Value);
 }
 
 export function normalizeTitle(title: string): string {
@@ -105,13 +82,13 @@ export function normalizeTitle(title: string): string {
     .toLowerCase();
 }
 
-export async function fetchOmdbRatings(
+export async function fetchRatingsForTitle(
   title: string,
-  apiKey: string,
+  netflixTitleId: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<CacheEntry> {
-  const normalizedTitle = normalizeTitle(title);
-  const cached = normalizedTitle ? readCache(normalizedTitle) : null;
+  const cacheId = netflixTitleId || normalizeTitle(title);
+  const cached = cacheId ? readCache(cacheId) : null;
   if (cached) {
     return cached;
   }
@@ -123,65 +100,37 @@ export async function fetchOmdbRatings(
     expiresAt: Date.now() + CACHE_TTL_MS,
   };
 
-  if (!normalizedTitle || !apiKey || apiKey.trim().length === 0) {
-    if (normalizedTitle) {
-      writeCache(normalizedTitle, failureEntry);
-    }
+  if (!title) {
     return failureEntry;
   }
 
-  const url = new URL(OMDB_API_URL);
-  url.searchParams.set("t", normalizedTitle);
-  url.searchParams.set("apikey", apiKey.trim());
+  const url = new URL(BACKEND_URL);
+  url.searchParams.set("netflixTitleId", netflixTitleId);
+  url.searchParams.set("title", title);
+  url.searchParams.set(
+    "locale",
+    typeof navigator !== "undefined" ? navigator.language : "en-US"
+  );
 
   try {
     const response = await fetchImpl(url.toString());
     if (!response.ok) {
-      writeCache(normalizedTitle, failureEntry);
+      if (cacheId) writeCache(cacheId, failureEntry);
       return failureEntry;
     }
 
-    const payload = (await response.json()) as OmdbResponse;
-    if (!payload || payload.Response === "False") {
-      writeCache(normalizedTitle, failureEntry);
-      return failureEntry;
-    }
-
+    const payload = (await response.json()) as BackendResponse;
     const entry: CacheEntry = {
-      imdbRating: normalizeOmdbValue(payload.imdbRating),
-      rtScore: extractRottenTomatoesScore(payload.Ratings),
-      type: normalizeOmdbValue(payload.Type),
+      imdbRating: payload.imdbRating ?? null,
+      rtScore: payload.rtScore ?? null,
+      type: payload.type ?? null,
       expiresAt: Date.now() + CACHE_TTL_MS,
     };
 
-    if (!entry.imdbRating && !entry.rtScore) {
-      writeCache(normalizedTitle, failureEntry);
-      return failureEntry;
-    }
-
-    writeCache(normalizedTitle, entry);
+    if (cacheId) writeCache(cacheId, entry);
     return entry;
   } catch {
-    writeCache(normalizedTitle, failureEntry);
+    if (cacheId) writeCache(cacheId, failureEntry);
     return failureEntry;
   }
-}
-
-export function getStoredOmdbKey(): Promise<string> {
-  return new Promise((resolve) => {
-    if (typeof chrome === "undefined" || !chrome.storage?.local) {
-      resolve("");
-      return;
-    }
-
-    chrome.storage.local.get(OMDB_KEY_STORAGE_KEY, (items: Record<string, unknown>) => {
-      const saved = items[OMDB_KEY_STORAGE_KEY];
-      resolve(typeof saved === "string" ? saved.trim() : "");
-    });
-  });
-}
-
-export async function fetchRatingsForTitle(title: string): Promise<CacheEntry> {
-  const apiKey = await getStoredOmdbKey();
-  return fetchOmdbRatings(title, apiKey);
 }
