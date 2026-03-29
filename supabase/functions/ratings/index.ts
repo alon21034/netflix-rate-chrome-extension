@@ -6,6 +6,31 @@ const TITLE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // 30 days
 const RATINGS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;  //  7 days
 const NEGATIVE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;     // 12 hours
 
+// ─── Confidence ───────────────────────────────────────────────────────────────
+
+const CONFIDENCE_THRESHOLD = 0.7;
+
+function scoreConfidence(
+  hintType: string | null,
+  hintYear: string | null,
+  omdbType: string | null,
+  omdbYear: string | null,
+): number {
+  let score = 0.5; // base: found an IMDb ID via Google
+
+  if (hintType && omdbType) {
+    if (hintType.toLowerCase() === omdbType.toLowerCase()) score += 0.3;
+    else score -= 0.2;
+  }
+
+  if (hintYear && omdbYear) {
+    if (Math.abs(parseInt(hintYear) - parseInt(omdbYear)) <= 1) score += 0.2;
+    else score -= 0.1;
+  }
+
+  return Math.min(1.0, Math.max(0.0, score));
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface RatingsResult {
@@ -104,6 +129,7 @@ interface OmdbResult {
   imdbRating: string | null;
   rtScore: string | null;
   type: string | null;
+  year: string | null;
 }
 
 async function fetchOmdb(imdbId: string): Promise<OmdbResult | null> {
@@ -132,6 +158,7 @@ async function fetchOmdb(imdbId: string): Promise<OmdbResult | null> {
     imdbRating: data?.imdbRating && data.imdbRating !== "N/A" ? data.imdbRating : null,
     rtScore: rtEntry?.Value ?? null,
     type: data?.Type ?? null,
+    year: data?.Year && data.Year !== "N/A" ? data.Year.slice(0, 4) : null,
   };
 }
 
@@ -140,14 +167,71 @@ async function fetchOmdb(imdbId: string): Promise<OmdbResult | null> {
 async function resolve(
   netflixTitleId: string,
   title: string,
+  hintType: string | null,
+  hintYear: string | null,
 ): Promise<RatingsResult> {
   const client = db();
   const now = new Date();
 
+  // 0. Check manual_overrides — takes precedence over all automated resolution.
+  const { data: overrideRow } = await client
+    .from("manual_overrides")
+    .select("imdb_id")
+    .eq("netflix_title_id", netflixTitleId)
+    .maybeSingle();
+
+  if (overrideRow?.imdb_id) {
+    // Check ratings_cache first before hitting OMDb.
+    const { data: cachedRatings } = await client
+      .from("ratings_cache")
+      .select("imdb_rating, rt_score, payload")
+      .eq("imdb_id", overrideRow.imdb_id)
+      .gt("expires_at", now.toISOString())
+      .maybeSingle();
+
+    if (cachedRatings) {
+      return {
+        imdbRating: cachedRatings.imdb_rating != null ? String(cachedRatings.imdb_rating) : null,
+        rtScore: cachedRatings.rt_score ?? null,
+        type: (cachedRatings.payload as Record<string, unknown>)?.type as string ?? null,
+        imdbId: overrideRow.imdb_id,
+        source: "cache",
+      };
+    }
+
+    // Fetch fresh ratings for the override.
+    if (await isUnderQuota("omdb", client)) {
+      const omdb = await fetchOmdb(overrideRow.imdb_id);
+      await incrementQuota("omdb", client);
+
+      if (omdb) {
+        const ratingsExpiry = new Date(now.getTime() + RATINGS_CACHE_TTL_MS).toISOString();
+        await client.from("ratings_cache").upsert({
+          imdb_id: overrideRow.imdb_id,
+          imdb_rating: omdb.imdbRating != null ? parseFloat(omdb.imdbRating) : null,
+          rt_score: omdb.rtScore ?? null,
+          payload: omdb,
+          fetched_at: now.toISOString(),
+          expires_at: ratingsExpiry,
+        });
+
+        return {
+          imdbRating: omdb.imdbRating,
+          rtScore: omdb.rtScore,
+          type: omdb.type,
+          imdbId: overrideRow.imdb_id,
+          source: "google+omdb",
+        };
+      }
+    }
+
+    return { imdbRating: null, rtScore: null, type: null, imdbId: overrideRow.imdb_id, source: "not-found" };
+  }
+
   // 1. Check title_resolution_cache.
   const { data: titleRow } = await client
     .from("title_resolution_cache")
-    .select("imdb_id")
+    .select("imdb_id, content_type, release_year")
     .eq("netflix_title_id", netflixTitleId)
     .gt("expires_at", now.toISOString())
     .maybeSingle();
@@ -191,21 +275,17 @@ async function resolve(
     imdbId = await resolveImdbId(title);
     await incrementQuota("google", client);
 
-    const titleExpiry = imdbId
-      ? new Date(now.getTime() + TITLE_CACHE_TTL_MS).toISOString()
-      : new Date(now.getTime() + NEGATIVE_CACHE_TTL_MS).toISOString();
-
-    await client.from("title_resolution_cache").upsert({
-      netflix_title_id: netflixTitleId,
-      input_title: title,
-      imdb_id: imdbId,
-      source: "google-primary",
-      confidence: imdbId ? 0.9 : 0.0,
-      last_verified_at: now.toISOString(),
-      expires_at: titleExpiry,
-    });
-
     if (!imdbId) {
+      // Negative cache: Google found nothing.
+      await client.from("title_resolution_cache").upsert({
+        netflix_title_id: netflixTitleId,
+        input_title: title,
+        imdb_id: null,
+        source: "google-primary",
+        confidence: 0.0,
+        last_verified_at: now.toISOString(),
+        expires_at: new Date(now.getTime() + NEGATIVE_CACHE_TTL_MS).toISOString(),
+      });
       return { imdbRating: null, rtScore: null, type: null, imdbId: null, source: "not-found" };
     }
   }
@@ -217,6 +297,39 @@ async function resolve(
 
   const omdb = await fetchOmdb(imdbId);
   await incrementQuota("omdb", client);
+
+  // 4. Score confidence using OMDb metadata vs. hints from caller.
+  //    Only scored when we just did a fresh Google lookup (no prior cache entry).
+  if (!imdbIdFromCache) {
+    const confidence = scoreConfidence(hintType, hintYear, omdb?.type ?? null, omdb?.year ?? null);
+
+    if (confidence < CONFIDENCE_THRESHOLD) {
+      // Low-confidence match — write a short-lived negative cache entry.
+      await client.from("title_resolution_cache").upsert({
+        netflix_title_id: netflixTitleId,
+        input_title: title,
+        imdb_id: null,
+        source: "google-primary",
+        confidence,
+        last_verified_at: now.toISOString(),
+        expires_at: new Date(now.getTime() + NEGATIVE_CACHE_TTL_MS).toISOString(),
+      });
+      return { imdbRating: null, rtScore: null, type: null, imdbId: null, source: "not-found" };
+    }
+
+    // Confident match — write title_resolution_cache with full metadata.
+    await client.from("title_resolution_cache").upsert({
+      netflix_title_id: netflixTitleId,
+      input_title: title,
+      imdb_id: imdbId,
+      content_type: omdb?.type ?? null,
+      release_year: omdb?.year != null ? parseInt(omdb.year) : null,
+      source: "google-primary",
+      confidence,
+      last_verified_at: now.toISOString(),
+      expires_at: new Date(now.getTime() + TITLE_CACHE_TTL_MS).toISOString(),
+    });
+  }
 
   const ratingsExpiry = new Date(now.getTime() + RATINGS_CACHE_TTL_MS).toISOString();
 
@@ -264,10 +377,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
     );
   }
 
+  const hintType = url.searchParams.get("type");
+  const hintYear = url.searchParams.get("year");
+
   // In-flight dedup: concurrent requests for the same title share one DB round-trip.
   let promise = inFlight.get(netflixTitleId);
   if (!promise) {
-    promise = resolve(netflixTitleId, title).finally(() => {
+    promise = resolve(netflixTitleId, title, hintType, hintYear).finally(() => {
       inFlight.delete(netflixTitleId);
     });
     inFlight.set(netflixTitleId, promise);

@@ -1,4 +1,4 @@
-import { fetchRatingsForTitle, normalizeTitle } from "./api";
+import { fetchRatingsForTitle, normalizeTitle, type FetchHints } from "./api";
 import { removeRatingsBadge, renderRatingsBadge } from "./overlay";
 
 const ROW_SELECTOR = ".lolomoRow, [data-uia='row-container']";
@@ -36,6 +36,28 @@ function getCardTitle(card: HTMLElement): string | null {
   }
 
   return null;
+}
+
+function getCardType(card: HTMLElement): string | undefined {
+  const raw = card.dataset.type || card.getAttribute("data-type");
+  if (!raw) return undefined;
+  const lower = raw.toLowerCase();
+  if (lower === "movie" || lower === "film") return "movie";
+  if (lower === "series" || lower === "show" || lower === "tv") return "series";
+  return undefined;
+}
+
+function getCardYear(card: HTMLElement): string | undefined {
+  const raw = card.dataset.year || card.getAttribute("data-year");
+  if (raw && /^\d{4}$/.test(raw)) return raw;
+
+  const title = getCardTitle(card);
+  if (title) {
+    const match = title.match(/\((\d{4})\)\s*$/);
+    if (match) return match[1];
+  }
+
+  return undefined;
 }
 
 function getNetflixTitleId(card: HTMLElement): string {
@@ -80,9 +102,15 @@ async function onCardMouseEnter(event: MouseEvent): Promise<void> {
     return;
   }
 
+  const hints: FetchHints = {};
+  const cardType = getCardType(card);
+  const cardYear = getCardYear(card);
+  if (cardType) hints.type = cardType;
+  if (cardYear) hints.year = cardYear;
+
   let pending = inFlightRatings.get(lookupKey);
   if (!pending) {
-    pending = fetchRatingsForTitle(title, netflixTitleId).finally(() => {
+    pending = fetchRatingsForTitle(title, netflixTitleId, hints).finally(() => {
       inFlightRatings.delete(lookupKey);
     });
     inFlightRatings.set(lookupKey, pending);

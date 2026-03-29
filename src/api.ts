@@ -82,11 +82,27 @@ export function normalizeTitle(title: string): string {
     .toLowerCase();
 }
 
+export interface FetchHints {
+  type?: string;
+  year?: string;
+}
+
 export async function fetchRatingsForTitle(
   title: string,
   netflixTitleId: string,
+  hintsOrFetch: FetchHints | typeof fetch = {},
   fetchImpl: typeof fetch = fetch
 ): Promise<CacheEntry> {
+  // Support legacy call signature: fetchRatingsForTitle(title, id, fetchFn)
+  let hints: FetchHints;
+  let _fetchImpl: typeof fetch;
+  if (typeof hintsOrFetch === "function") {
+    hints = {};
+    _fetchImpl = hintsOrFetch;
+  } else {
+    hints = hintsOrFetch;
+    _fetchImpl = fetchImpl;
+  }
   const cacheId = netflixTitleId || normalizeTitle(title);
   const cached = cacheId ? readCache(cacheId) : null;
   if (cached) {
@@ -111,9 +127,11 @@ export async function fetchRatingsForTitle(
     "locale",
     typeof navigator !== "undefined" ? navigator.language : "en-US"
   );
+  if (hints.type) url.searchParams.set("type", hints.type);
+  if (hints.year) url.searchParams.set("year", hints.year);
 
   try {
-    const response = await fetchImpl(url.toString());
+    const response = await _fetchImpl(url.toString());
     if (!response.ok) {
       if (cacheId) writeCache(cacheId, failureEntry);
       return failureEntry;
