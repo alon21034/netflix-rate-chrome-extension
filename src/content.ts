@@ -38,13 +38,29 @@ function getCardTitle(card: HTMLElement): string | null {
   return null;
 }
 
-function getTitleLookupKey(title: string): string {
-  const normalized = normalizeTitle(title);
-  if (normalized) {
-    return normalized;
+function getNetflixTitleId(card: HTMLElement): string {
+  if (card.dataset.id) {
+    return card.dataset.id;
   }
 
-  return title.trim().toLowerCase();
+  const link = card.closest<HTMLAnchorElement>("a[href*='/title/']");
+  if (link) {
+    const match = link.href.match(/\/title\/(\d+)/);
+    if (match) {
+      return match[1];
+    }
+  }
+
+  return "";
+}
+
+function getTitleLookupKey(title: string, netflixTitleId: string): string {
+  if (netflixTitleId) {
+    return netflixTitleId;
+  }
+
+  const normalized = normalizeTitle(title);
+  return normalized || title.trim().toLowerCase();
 }
 
 async function onCardMouseEnter(event: MouseEvent): Promise<void> {
@@ -58,17 +74,18 @@ async function onCardMouseEnter(event: MouseEvent): Promise<void> {
     return;
   }
 
-  const cacheKey = getTitleLookupKey(title);
-  if (!cacheKey) {
+  const netflixTitleId = getNetflixTitleId(card);
+  const lookupKey = getTitleLookupKey(title, netflixTitleId);
+  if (!lookupKey) {
     return;
   }
 
-  let pending = inFlightRatings.get(cacheKey);
+  let pending = inFlightRatings.get(lookupKey);
   if (!pending) {
-    pending = fetchRatingsForTitle(title).finally(() => {
-      inFlightRatings.delete(cacheKey);
+    pending = fetchRatingsForTitle(title, netflixTitleId).finally(() => {
+      inFlightRatings.delete(lookupKey);
     });
-    inFlightRatings.set(cacheKey, pending);
+    inFlightRatings.set(lookupKey, pending);
   }
 
   const ratings = await pending;
